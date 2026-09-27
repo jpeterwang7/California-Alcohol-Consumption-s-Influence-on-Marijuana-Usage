@@ -1,0 +1,246 @@
+---
+title: "Marijuana and Alcohol"
+author: "Jiaye Wang (UID 906147831)"
+date: "2026-02-27"
+output: pdf_document
+---
+
+# Setup
+
+```{r}
+# Packages not included with a standard R install (uncomment to install once)
+#install.packages("fixest")
+#install.packages("gt")
+#install.packages("broom")
+#install.packages("purrr")
+#install.packages("modelsummary")
+
+library(readxl)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(fixest)
+library(modelsummary)
+library(broom)
+library(purrr)
+
+# Sheet "Graph 1": Year, CA, ControlledStateAverage
+# Sheet "Graph 2": Year, CA, one column per control state (18), Average
+data_file <- "Alcohol Consumption Data.xlsx"
+```
+
+# 1. Data Preparation
+
+Two versions of the data are used:
+
+* `df_trend` (wide, one row per year): California vs. the control-state average.
+  Used for the trend and counterfactual plots.
+* `df_panel` (long, one row per state-year): California plus the 18 control states.
+  Used for the summary statistics, event study, and DiD regression.
+
+```{r}
+# Wide trend data: CA vs. control-state average (sheet "Graph 1")
+df_trend <- read_excel(data_file, sheet = "Graph 1")
+
+# Long state-year panel (CA from "Graph 1", controls from "Graph 2")
+# CA in panel format
+ca <- df_trend |>
+  select(Year, CA) |>
+  rename(year = Year, y = CA) |>
+  mutate(state = "CA")
+
+# Control states in panel format
+control <- read_excel(data_file, sheet = "Graph 2") |>
+  select(-Average, -CA) |> # drop the "Average" column
+  rename(year = Year) |>
+  pivot_longer(cols = -year, names_to = "state", values_to = "y")
+
+# Combine CA with controls and build treatment indicators
+df_panel <- bind_rows(ca, control) |>
+  mutate(treated = (state == "CA"),                        # treatment group
+         post = (year >= 2018),                            # post-legalization (retail sales began 1/1/2018)
+         did = treated * post,                             # CA x Post interaction
+         treat_year = ifelse(state == "CA", 2018, 0)       # 0 = never-treated controls
+  )
+```
+
+# 2. Summary Statistics (Section 3.2, Table 1)
+
+```{r}
+df_sum <- df_panel |>
+  mutate(
+    # grouping variables
+    group = ifelse(state == "CA", "California", "Control States"),
+    period = ifelse(year < 2018, "Pre-2018", "Post-2018")
+  )
+
+# Table 1: Summary Statistics: Alcohol Consumption by Group
+datasummary(
+  y ~ group * (Mean + SD + N),
+  data = df_sum,
+  title = "Summary Statistics: Alcohol Consumption by Group (2001-2022)",
+  output = "gt"
+)
+```
+
+# 3. No Anticipation Assumption (Paper Section 4.1)
+
+Event study using the Sun & Abraham (`sunab`) estimator with state and year fixed effects. 2017 (t = -1) is the reference year; pre-period coefficients near zero support no anticipation.
+
+```{r}
+es <- feols(y ~ sunab(treat_year, year) | state + year, data = df_panel, cluster = "state")
+iplot(es,
+      main = "Dynamic Impact of CA Recreational Marijuana Legalization",
+      xlab = "Years Relative to Legalization",
+      ylab = "Estimated Effect on Alcohol Consumption")
+```
+
+# 4. Parallel Trend Assumption (Section 4.2)
+
+### 4a. California vs. control-state average
+
+```{r}
+ggplot(df_trend, aes(x = Year)) +
+  # California trend line with dots
+  geom_line(aes(y = CA, color = "CA"), linewidth = 1) +
+  geom_point(aes(y = CA, color = "CA"), size = 2) +
+  # Control trend line with dots
+  geom_line(aes(y = ControlledStateAverage, color = "Controlled State Average"), linewidth = 1) +
+  geom_point(aes(y = ControlledStateAverage, color = "Controlled State Average"), size = 2) +
+  # Treatment start
+  geom_vline(xintercept = 2018, linetype = "dashed") +
+  # Labels
+  labs(
+    title = "Legal Recreational Marijuana's Effects on Alcohol Consumption",
+    subtitle = "Marijuana Introduction in CA = 2018",
+    x = "Year",
+    y = "Alcohol Consumption (Gallons of Ethanol Per Capita)",
+    color = "State"
+  ) +
+  theme_minimal()
+```
+
+### 4b. Counterfactual trend for California
+
+The counterfactual is the control-state average shifted up by the mean pre-2018 gap between California and the controls, i.e. what California would look like without legalization if parallel trends hold.
+
+```{r}
+# Mean pre-treatment gap (CA - control)
+pre_gap <- df_trend |>
+  filter(Year < 2018) |>
+  summarise(gap = mean(CA - ControlledStateAverage)) |>
+  pull(gap)
+
+# Counterfactual: CA without legalization of recreational marijuana
+df_counterfactual <- df_trend |>
+  mutate(CA_counterfactual = ControlledStateAverage + pre_gap)
+
+ggplot(df_counterfactual, aes(x = Year)) +
+  # Three lines: actual treated, counterfactual, and control
+  geom_line(aes(y = CA, color = "CA (Actual)"), linewidth = 1) +
+  geom_line(aes(y = ControlledStateAverage, color = "Control Avg"), linewidth = 1) +
+  geom_line(aes(y = CA_counterfactual, color = "CA Counterfactual"),
+            linetype = "dashed", linewidth = 1) +
+  # Treatment start
+  geom_vline(xintercept = 2018, linetype = "dashed") +
+  # Labels
+  labs(
+    title = "Counterfactual Parallel Trend for CA",
+    subtitle = "Dashed line shows expected CA alcohol consumption without legalization",
+    y = "Alcohol Consumption (Gallons of Ethanol Per Capita)",
+    x = "Year",
+  ) +
+  theme_minimal()
+```
+
+# 5. Difference-in-Differences Estimate (Paper Section 4.3, Table 2)
+
+Model: $Y_{st} = \alpha + \beta (CA_s \times Post_t) + \gamma_s + \delta_t + \epsilon_{st}$, with state and year fixed effects and standard errors clustered by state.
+
+```{r}
+m_did <- feols(y ~ did | state + year, data = df_panel, cluster = "state")
+modelsummary(m_did,
+             coef_map = c("did" = "California × Post (DiD Effect)"),
+             statistic = "({std.error})",
+             gof_map = c("nobs", "r.squared"), # omit AIC, BIC, etc.
+             title = "Difference-in-Differences Estimates of the Effect of Recreational Marijuana Legalization on Alcohol Consumption in CA"
+)
+```
+
+# 6. Robustness Check (Paper Section 4.3)
+
+Re-estimates the DiD coefficient (a) on the full sample (baseline), (b) excluding the COVID years 2020–2022, and (c) dropping each control state one at a time, then plots each estimate with its 95% confidence interval.
+
+```{r}
+# Control states and full state list
+control_states <- c("AL","AR","GA","FL","ID","IN","IA","KS","KY","LA",
+                    "MS","NE","NC","SC","TN","TX","WI","WY")
+all_states <- c("CA", control_states)
+
+# Long panel built directly from sheet "Graph 2"
+df_robust <- read_excel(data_file, sheet = "Graph 2") |>
+  select(Year, all_of(all_states)) |>
+  pivot_longer(cols = -Year, names_to = "state", values_to = "alcohol") |>
+  mutate(
+    Post = if_else(Year >= 2018, 1, 0),
+    CA = if_else(state == "CA", 1, 0)
+  )
+
+# Run the DiD on a given sample and return the CA:Post coefficient and 95% CI
+run_did <- function(data, label) {
+  m <- lm(alcohol ~ CA*Post + factor(state) + factor(Year), data = data)
+  out <- tidy(m, conf.int = TRUE) |>
+    filter(term == "CA:Post") |>
+    transmute(
+      spec = label,
+      beta = estimate,
+      se = std.error,
+      p_value = p.value,
+      ci_low = conf.low,
+      ci_high = conf.high
+    )
+  out
+}
+
+#(a)Baseline: all states, all years
+baseline_results <- run_did(
+  df_robust |>
+    filter(state %in% c("CA", control_states)),
+  "Baseline"
+)
+
+#(b) Exclude COVID years
+covid_results <- run_did(
+  df_robust |>
+    filter(state %in% c("CA", control_states), Year <= 2019),
+  "Exclude 2020–2022"
+)
+
+#(c) Drop one control state at a time
+control_results <- map_dfr(control_states, function(st) {
+  run_did(
+    df_robust |>
+      filter(state %in% c("CA", setdiff(control_states, st))),
+    paste("Drop", st)
+  )
+})
+
+results_df <- bind_rows(baseline_results, covid_results, control_results)
+
+# Keep specs in the order above (top to bottom on the plot)
+results_df <- results_df |>
+  mutate(spec = factor(spec, levels = rev(spec)))
+
+# Robustness plot
+ggplot(results_df, aes(x = beta, y = spec)) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_errorbarh(aes(xmin = ci_low, xmax = ci_high), height = 0.2) +
+  geom_point(size = 2.5) +
+  labs(
+    title = "Robustness of DiD Estimate",
+    subtitle = "Marijuana legalization and alcohol consumption",
+    x = "Estimated CA × Post Effect",
+    y = ""
+  ) +
+  theme_minimal()
+```
