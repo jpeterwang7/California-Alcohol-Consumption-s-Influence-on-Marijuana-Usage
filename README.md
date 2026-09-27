@@ -60,7 +60,7 @@ In R (`fixest`), this is `feols(y ~ did | state + year, cluster = "state")`.
 
 ## What the code does
 
-The `.Rmd` is organized into sections that follow the paper in order:
+The `.Rmd` and `.R` files contain **identical code** and give the same results; use whichever you prefer. The `.R` script is the `.Rmd` with the text converted to comments, and it has the same sections. Both follow the paper in order:
 
 | Section | Output | Paper location |
 |---|---|---|
@@ -75,14 +75,16 @@ The `.Rmd` is organized into sections that follow the paper in order:
 
 ## How to run
 
-1. Put `Marijuana_and_Alchohol_V2.Rmd` and `Alcohol Consumption Data.xlsx` in the **same folder**. The code looks for the data file by that exact name. If your copy is named differently (for example `Alcohol_Consumption_Data.xlsx`), rename the file or update `data_file` in the Setup chunk.
-2. Open the `.Rmd` in RStudio.
+1. Put `Alcohol Consumption Data.xlsx` in the **same folder** as the code file (`.Rmd` or `.R`). The code looks for the data file by that exact name. If your copy is named differently (for example `Alcohol_Consumption_Data.xlsx`), rename the file or update `data_file` in the Setup chunk.
+2. Open the `.Rmd` or `.R` file in RStudio.
 3. Install any missing packages by running once in the console:
-   ```r
+```r
    install.packages(c("readxl", "ggplot2", "tidyr", "dplyr", "fixest",
                       "modelsummary", "gt", "broom", "purrr"))
    ```
-4. Click **Run All**, or **Knit** to produce a PDF. Knitting to PDF requires a LaTeX installation, such as `tinytex::install_tinytex()`.
+4. Run the code:
+   * **`.Rmd`:** click **Run All**, or **Knit** to produce a PDF. Knitting to PDF requires a LaTeX installation, such as `tinytex::install_tinytex()`.
+   * **`.R`:** click **Source with Echo** (Ctrl+Shift+Enter), or run it line by line with Ctrl+Enter. Plain **Source** runs the code but does not display the tables and plots.
 
 ## Limitations
 
